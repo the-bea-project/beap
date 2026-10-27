@@ -1,0 +1,184 @@
+//// Streaming uploads.
+////
+//// The body is read from the socket 64 KiB at a time and each piece is
+//// written to the disk before the next one is read, so memory stays flat
+//// whatever the size, and a disk slower than the network slows the sender
+//// down (TCP flow control) instead of piling data up.
+////
+//// An upload is written to a new file in the staging directory, opened once
+//// for the whole transfer. When the body is complete and on the disk, the
+//// file gets its name with a hard link: atomic, and it fails rather than
+//// replace anything already there, so the next free name is tried
+//// (`notes (1).txt`). Concurrent uploads of the same name therefore all
+//// succeed, under different names, and nobody ever sees a partial file.
+//// The staging file goes on every path: on success, after a failure, and,
+//// through a watcher, when the connection's process dies mid-transfer.
+
+import beap/internal/paths
+import beap/internal/runtime/runtime.{type WriteHandle}
+import ewe.{type Connection}
+import gleam/crypto
+import gleam/http/request.{type Request}
+import simplifile
+
+pub const chunk_size: Int = 65_536
+
+pub type Saved { name: String, size: Int }
+
+pub type UploadError {
+  InvalidName
+  TooLarge
+  /// The body ended early: the client went away, stalled or sent
+  /// malformed chunks.
+  Interrupted
+  NoSpace
+  Denied
+  /// No free name was found for the file.
+  Conflict
+  Failed(simplifile.FileError)
+}
+
+/// Create the staging directory in the shared root, emptied of files left
+/// by an earlier run that was killed.
+pub def prepare(root: String) -> Result(String, simplifile.FileError) {
+  staging = paths.join(root, [paths.staging_name])
+  simplifile.create_directory_all(staging)?
+  names = runtime.read_directory(staging)?
+  list.each(names, fn(name) { simplifile.delete_file(staging <> "/" <> name) })
+  Ok(staging)
+}
+
+/// Saves the request's body in `dir` (a real path in the root) as `name`,
+/// or the next free variant of it.
+pub def save(
+  req: Request(Connection),
+  in dir: String,
+  named name: String,
+  staging staging: String,
+  limit limit: Int,
+) -> Result(Saved, UploadError) {
+  valid_name(name) else Error(InvalidName)
+  temp = "#{staging}/#{token()}.part"
+  file = runtime.open_exclusive(temp)? else error -> Error(file_error(error))
+  watcher = runtime.watch(temp)
+  written = write_body(req, file, 0, limit)
+  closed = runtime.close(file)
+  saved = case written, closed {
+    Ok(size), Ok(_) -> publish(temp, dir, name, size, 0)
+    Error(error), _ -> Error(error)
+    _, Error(error) -> Error(file_error(error))
+  }
+  _ = simplifile.delete_file(temp)
+  runtime.unwatch(watcher)
+  saved
+}
+
+def write_body(
+  req: Request(Connection),
+  file: WriteHandle,
+  written: Int,
+  limit: Int,
+) -> Result(Int, UploadError) {
+  runtime.discard_body_progress()
+  event = ewe.read_body_chunk(req, max_chunk_bytes: chunk_size, limit:)?
+    else error -> Error(body_error(error))
+  case event {
+    ewe.Chunk(data:, request:) -> {
+      runtime.write(file, data)? else error -> Error(file_error(error))
+      write_body(request, file, written + bit_array.byte_size(data), limit)
+    }
+    ewe.Done(_) -> {
+      // The data must be on the disk before the file gets its name.
+      runtime.sync(file)? else error -> Error(file_error(error))
+      Ok(written)
+    }
+  }
+}
+
+/// Gives the complete file its name in `dir`, never replacing a file.
+def publish(
+  temp: String,
+  dir: String,
+  name: String,
+  size: Int,
+  attempt: Int,
+) -> Result(Saved, UploadError) {
+  attempt < 100 else Error(Conflict)
+  candidate = numbered(name, attempt)
+  case simplifile.create_link(to: temp, from: dir <> "/" <> candidate) {
+    Ok(_) -> Ok(Saved(name: candidate, size:))
+    Error(simplifile.Eexist) -> publish(temp, dir, name, size, attempt + 1)
+    Error(error) -> case list.contains(no_hard_links, error) {
+      True -> move(temp, dir, name, size, attempt)
+      False -> Error(file_error(error))
+    }
+  }
+}
+
+/// What `link` fails with where the filesystem has no hard links.
+const no_hard_links: List(simplifile.FileError) = [
+  simplifile.Eperm,
+  simplifile.Enotsup,
+  simplifile.Eopnotsupp,
+]
+
+/// For filesystems without hard links (FAT, exFAT): checks that the name is
+/// free, then renames. Unlike a link, that can't stop another upload taking
+/// the name in between.
+def move(
+  temp: String,
+  dir: String,
+  name: String,
+  size: Int,
+  attempt: Int,
+) -> Result(Saved, UploadError) {
+  attempt < 100 else Error(Conflict)
+  candidate = numbered(name, attempt)
+  target = dir <> "/" <> candidate
+  case simplifile.link_info(target) {
+    Ok(_) -> move(temp, dir, name, size, attempt + 1)
+    Error(simplifile.Enoent) -> {
+      simplifile.rename(temp, target)? else error -> Error(file_error(error))
+      Ok(Saved(name: candidate, size:))
+    }
+    Error(error) -> Error(file_error(error))
+  }
+}
+
+/// `name`, then `name (1)`, `name (2)`...: before the extension, which
+/// starts at the first dot after the first character (`a (1).tar.gz`).
+pub def numbered(name: String, attempt: Int) -> String {
+  case attempt, string.split_once(string.drop_start(name, 1), ".") {
+    0, _ -> name
+    _, Ok((stem, extension)) ->
+      "#{string.slice(name, 0, 1)}#{stem} (#{int.to_string(attempt)}).#{extension}"
+    _, Error(_) -> "#{name} (#{int.to_string(attempt)})"
+  }
+}
+
+/// A name that can be created in a directory: one path segment, not the
+/// staging directory's name, and within the usual 255-byte limit (leaving
+/// room for ` (99)`).
+pub def valid_name(name: String) -> Bool {
+  fits = string.byte_size(name) <= 250
+  paths.valid_segment(name) and name != paths.staging_name and fits
+}
+
+def token() -> String {
+  crypto.strong_random_bytes(16) |> bit_array.base16_encode
+}
+
+def body_error(error: ewe.BodyError) -> UploadError {
+  case error {
+    ewe.BodyTooLarge -> TooLarge
+    ewe.InvalidBody -> Interrupted
+  }
+}
+
+def file_error(error: simplifile.FileError) -> UploadError {
+  case error {
+    simplifile.Enospc | simplifile.Edquot -> NoSpace
+    simplifile.Eacces | simplifile.Eperm | simplifile.Erofs -> Denied
+    _ -> Failed(error)
+  }
+}

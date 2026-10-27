@@ -1,0 +1,636 @@
+//// The stylesheet and script of the interface, built into the program so
+//// that Beap is a single, self-contained executable. They are raw strings:
+//// no escapes, no interpolation (and so no backticks in the script).
+
+pub const style: String = `:root {
+  color-scheme: light dark;
+  --bg: #fafaf9;
+  --surface: #ffffff;
+  --fg: #1c1c1e;
+  --muted: #646469;
+  --line: #e5e5e2;
+  --line-strong: #c9c9c5;
+  --hover: #f1f1ee;
+  --accent: #2759c4;
+  --ok: #24744a;
+  --error: #b42d22;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #131314;
+    --surface: #1b1b1d;
+    --fg: #e7e7e4;
+    --muted: #9c9ca1;
+    --line: #2a2a2d;
+    --line-strong: #47474b;
+    --hover: #1e1e21;
+    --accent: #84a8f5;
+    --ok: #6fc993;
+    --error: #f07b6f;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: inherit; }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.wrap {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 36px 20px 72px;
+}
+
+.top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+.brand {
+  font: 600 18px/1 var(--mono);
+  letter-spacing: -0.02em;
+  text-decoration: none;
+}
+
+.version {
+  font: 12px var(--mono);
+  color: var(--muted);
+}
+
+.crumbs {
+  font: 14px/1.6 var(--mono);
+  color: var(--muted);
+  margin: 0 0 24px;
+  overflow-wrap: anywhere;
+}
+
+.crumbs a { text-decoration: none; }
+.crumbs a:hover { color: var(--fg); text-decoration: underline; text-underline-offset: 3px; }
+.crumbs [aria-current] { color: var(--fg); }
+.crumbs .sep { margin: 0 0.4em; }
+
+.drop {
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+  padding: 26px 16px 22px;
+  text-align: center;
+  color: var(--muted);
+  transition: border-color 0.15s, background-color 0.15s;
+}
+
+.drop.over {
+  border-color: var(--accent);
+  background: var(--hover);
+}
+
+.drop .icon { width: 20px; height: 20px; }
+.drop p { margin: 0; }
+.drop-title { color: var(--fg); font-weight: 500; margin-top: 6px !important; }
+
+.link-button {
+  font: inherit;
+  color: var(--accent);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.hint { font-size: 13px; margin-top: 10px !important; }
+
+.readonly {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0;
+}
+
+.uploads {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.upload {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+}
+
+.upload .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload .status {
+  font: 12px var(--mono);
+  color: var(--muted);
+  text-align: right;
+}
+
+.upload.done .status { color: var(--ok); }
+.upload.failed .status { color: var(--error); }
+.upload.done .cancel, .upload.failed .cancel { visibility: hidden; }
+
+.upload progress {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  border: 0;
+  border-radius: 2px;
+  background: var(--line);
+  color: var(--accent);
+  overflow: hidden;
+}
+
+.upload progress::-webkit-progress-bar { background: var(--line); }
+.upload progress::-webkit-progress-value { background: var(--accent); transition: width 0.2s; }
+.upload progress::-moz-progress-bar { background: var(--accent); }
+.upload.done progress::-webkit-progress-value { background: var(--ok); }
+.upload.done progress::-moz-progress-bar { background: var(--ok); }
+.upload.failed progress { display: none; }
+
+/* No length known: a sliding bar. */
+.upload progress:not([value]) {
+  background: linear-gradient(90deg, var(--line) 35%, var(--accent) 35%, var(--accent) 65%, var(--line) 65%) 0 0 / 300% 100%;
+  animation: slide 1.4s linear infinite;
+}
+
+.upload progress:not([value])::-webkit-progress-bar { background: transparent; }
+.upload progress:not([value])::-moz-progress-bar { background: transparent; }
+
+@keyframes slide {
+  from { background-position: 100% 0; }
+  to { background-position: 0 0; }
+}
+
+.listing {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 28px;
+  font-size: 14.5px;
+}
+
+.listing th {
+  text-align: left;
+  font: 500 11.5px var(--sans);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 0 8px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.listing td {
+  height: 44px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.listing tbody tr:hover { background: var(--hover); }
+
+.listing .name a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  text-decoration: none;
+}
+
+.listing .name span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.listing .name .icon { color: var(--muted); }
+.listing .dir .name .icon { color: var(--accent); }
+
+.listing .size {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+  font: 13px var(--mono);
+  color: var(--muted);
+}
+
+.listing th.size { font: 500 11.5px var(--sans); }
+
+.listing .actions {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.listing .empty td {
+  height: 96px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vertical-align: middle;
+}
+
+.act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.act:hover, .menu[open] > .act { color: var(--fg); background: var(--line); }
+
+.menu { position: relative; display: inline-block; }
+.menu > summary { list-style: none; }
+.menu > summary::-webkit-details-marker { display: none; }
+
+.menu-list {
+  position: absolute;
+  right: 0;
+  top: 34px;
+  z-index: 2;
+  min-width: 220px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
+  text-align: left;
+}
+
+.menu-list button {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--fg);
+  font: 13px var(--sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu-list button:hover { background: var(--hover); }
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  max-width: calc(100% - 32px);
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: var(--fg);
+  color: var(--bg);
+  font-size: 13px;
+  opacity: 0;
+  transform: translate(-50%, 6px);
+  transition: opacity 0.15s, transform 0.15s;
+  pointer-events: none;
+}
+
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* Holds the icons' symbols: takes no room, but stays rendered for <use>. */
+.sprite {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+.sr, .offscreen {
+  position: fixed;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+
+.inline-size { display: none; }
+
+@media (max-width: 560px) {
+  .wrap { padding: 22px 14px 56px; }
+  .hint { display: none; }
+  .listing .size { display: none; }
+  .listing td { height: 50px; }
+  .inline-size {
+    display: inline;
+    margin-left: auto;
+    padding-left: 8px;
+    font: 12px var(--mono);
+    color: var(--muted);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+`
+
+pub const script: String = `(function () {
+  "use strict";
+
+  var toastBox = document.getElementById("toast");
+  var toastTimer = 0;
+
+  function toast(message) {
+    toastBox.textContent = message;
+    toastBox.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastBox.classList.remove("show"); }, 1800);
+  }
+
+  // The same units as the server's listing.
+  function formatSize(bytes) {
+    var units = ["B", "KB", "MB", "GB", "TB", "PB"];
+    var unit = 0;
+    while (bytes >= Math.pow(1024, unit + 1) && unit < units.length - 1) unit++;
+    if (unit === 0) return bytes + " B";
+    var tenths = Math.round((bytes * 10) / Math.pow(1024, unit));
+    var text = tenths < 1000 && tenths % 10 ? (tenths / 10).toFixed(1) : String(Math.floor(tenths / 10));
+    return text + " " + units[unit];
+  }
+
+  // navigator.clipboard only exists on secure origins (https, localhost):
+  // over plain http from another machine, copy from a selected textarea.
+  function copy(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function (resolve, reject) {
+      var area = document.createElement("textarea");
+      area.value = text;
+      area.setAttribute("readonly", "");
+      area.className = "offscreen";
+      document.body.appendChild(area);
+      area.select();
+      var copied = false;
+      try { copied = document.execCommand("copy"); } catch (error) { copied = false; }
+      document.body.removeChild(area);
+      if (copied) resolve(); else reject(new Error("copy failed"));
+    });
+  }
+
+  function closeMenus(except) {
+    document.querySelectorAll("details.menu[open]").forEach(function (menu) {
+      if (menu !== except) menu.open = false;
+    });
+  }
+
+  document.addEventListener("click", function (event) {
+    var button = event.target.closest("[data-copy]");
+    if (button) {
+      copy(button.getAttribute("data-copy")).then(
+        function () { toast(button.getAttribute("data-copied") || "Copied"); },
+        function () { toast("Couldn't copy to the clipboard"); }
+      );
+      closeMenus(null);
+      return;
+    }
+    closeMenus(event.target.closest("details.menu"));
+  });
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "Escape") return;
+    var open = document.querySelector("details.menu[open]");
+    if (open) {
+      open.open = false;
+      open.querySelector("summary").focus();
+    }
+  });
+
+  // --- Uploads ---------------------------------------------------------------
+
+  var drop = document.getElementById("drop");
+  if (!drop) return;
+
+  var picker = document.getElementById("picker");
+  var list = document.getElementById("uploads");
+  var target = drop.getAttribute("data-target");
+  var maxUpload = Number(drop.getAttribute("data-max"));
+  var queue = [];
+  var busy = false;
+  var savedSinceRefresh = 0;
+  var dragDepth = 0;
+
+  document.getElementById("browse").addEventListener("click", function () {
+    picker.click();
+  });
+
+  picker.addEventListener("change", function () {
+    add(Array.prototype.slice.call(picker.files));
+    picker.value = "";
+  });
+
+  function carriesFiles(event) {
+    var types = event.dataTransfer ? event.dataTransfer.types : [];
+    return Array.prototype.indexOf.call(types, "Files") >= 0;
+  }
+
+  // Files can be dropped anywhere on the page; the drop zone lights up.
+  document.addEventListener("dragenter", function (event) {
+    if (!carriesFiles(event)) return;
+    event.preventDefault();
+    dragDepth++;
+    drop.classList.add("over");
+  });
+
+  document.addEventListener("dragover", function (event) {
+    if (!carriesFiles(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  });
+
+  document.addEventListener("dragleave", function () {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) drop.classList.remove("over");
+  });
+
+  document.addEventListener("drop", function (event) {
+    if (!carriesFiles(event)) return;
+    event.preventDefault();
+    dragDepth = 0;
+    drop.classList.remove("over");
+    add(droppedFiles(event.dataTransfer));
+  });
+
+  function droppedFiles(transfer) {
+    var files = [];
+    var skipped = 0;
+    for (var i = 0; i < transfer.files.length; i++) {
+      var item = transfer.items && transfer.items[i];
+      var entry = item && item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+      if (entry && entry.isDirectory) skipped++;
+      else files.push(transfer.files[i]);
+    }
+    if (skipped) toast("Folders can't be uploaded: drop the files inside them");
+    return files;
+  }
+
+  function add(files) {
+    files.forEach(function (file) {
+      var item = row(file);
+      if (file.size > maxUpload) {
+        finish(item, "failed", "Larger than the " + formatSize(maxUpload) + " upload limit");
+      } else {
+        queue.push({ file: file, item: item });
+      }
+    });
+    next();
+  }
+
+  function row(file) {
+    var li = document.createElement("li");
+    li.className = "upload";
+
+    var name = document.createElement("span");
+    name.className = "name";
+    name.textContent = file.name;
+    name.title = file.name;
+
+    var status = document.createElement("span");
+    status.className = "status";
+    status.textContent = "Waiting";
+
+    var cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "act cancel";
+    cancel.setAttribute("aria-label", "Cancel uploading " + file.name);
+    cancel.title = "Cancel";
+    cancel.textContent = "×";
+
+    var progress = document.createElement("progress");
+    progress.max = 1;
+    progress.value = 0;
+    progress.setAttribute("aria-label", "Uploading " + file.name);
+
+    li.append(name, status, cancel, progress);
+    list.append(li);
+    return { li: li, name: file.name, size: file.size, status: status, cancel: cancel, progress: progress };
+  }
+
+  function next() {
+    if (busy) return;
+    var job = queue.shift();
+    if (!job) {
+      if (savedSinceRefresh) {
+        savedSinceRefresh = 0;
+        refresh();
+      }
+      return;
+    }
+    busy = true;
+    send(job, function () {
+      busy = false;
+      next();
+    });
+  }
+
+  // One upload at a time: a PUT of the raw file, so the server streams it
+  // straight to the disk, with the browser's own progress events.
+  function send(job, done) {
+    var item = job.item;
+    var xhr = new XMLHttpRequest();
+    item.cancel.onclick = function () { xhr.abort(); };
+    item.status.textContent = "Starting";
+
+    xhr.upload.onprogress = function (event) {
+      if (!event.lengthComputable) {
+        item.progress.removeAttribute("value");
+        item.status.textContent = formatSize(event.loaded);
+        return;
+      }
+      item.progress.value = event.loaded / event.total;
+      item.status.textContent = event.loaded >= event.total
+        ? "Saving"
+        : formatSize(event.loaded) + " / " + formatSize(event.total) + " · " +
+          Math.floor((event.loaded / event.total) * 100) + "%";
+    };
+
+    xhr.onload = function () {
+      var message = (xhr.responseText || "").split("\n")[0];
+      if (xhr.status === 201) {
+        savedSinceRefresh++;
+        finish(item, "done", message || "Saved");
+      } else {
+        finish(item, "failed", message || "Failed (HTTP " + xhr.status + ")");
+      }
+      done();
+    };
+    xhr.onerror = function () {
+      finish(item, "failed", "Network error: the upload didn't complete");
+      done();
+    };
+    xhr.onabort = function () {
+      finish(item, "failed", "Cancelled");
+      done();
+    };
+
+    xhr.open("PUT", target + encodeURIComponent(job.file.name));
+    xhr.send(job.file);
+  }
+
+  function finish(item, outcome, message) {
+    item.li.classList.add(outcome);
+    item.status.textContent = message;
+    item.progress.value = 1;
+    item.cancel.onclick = null;
+    toast(message === "Cancelled" ? "Cancelled " + item.name : message);
+  }
+
+  // Swap in the new listing without losing the uploads' statuses.
+  function refresh() {
+    fetch(window.location.href, { cache: "no-store" })
+      .then(function (response) { return response.text(); })
+      .then(function (html) {
+        var fresh = new DOMParser().parseFromString(html, "text/html").querySelector(".listing tbody");
+        var current = document.querySelector(".listing tbody");
+        if (fresh && current) current.replaceWith(document.adoptNode(fresh));
+      })
+      .catch(function () {});
+  }
+})();
+`

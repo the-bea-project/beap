@@ -1,0 +1,377 @@
+//// The browser interface: one server-rendered page per folder. The script
+//// (`assets.script`) only adds uploads, copying and the listing refresh;
+//// browsing and downloading work without it.
+
+import beap/internal/fs.{type Entry}
+import beap/internal/paths
+import beap/internal/share
+
+pub type Page {
+  Page(
+    version: String,
+    /// The folder, as decoded segments from the root.
+    path: List(String),
+    entries: List(Entry),
+    /// `http://host:port` as the visitor reached Beap.
+    origin: String,
+    uploads: Bool,
+    max_upload: Int,
+  )
+}
+
+type Attributes = List((String, String))
+
+pub def page(page: Page) -> String {
+  main = element("main", [("class", "wrap")], [
+    header(page.version),
+    breadcrumbs(page.path),
+    upload_zone(page),
+    listing(page),
+  ])
+  toast = [
+    ("class", "toast"),
+    ("id", "toast"),
+    ("role", "status"),
+    ("aria-live", "polite"),
+  ]
+  body = element("body", [], [icons, main, element("div", toast, [])])
+  "<!doctype html>\n" <> element("html", [("lang", "en")], [
+    head(title(page.path)),
+    body,
+  ])
+}
+
+/// `/Development/projects/`
+pub def title(path: List(String)) -> String {
+  case path {
+    [] -> "/"
+    _ -> "/" <> string.join(path, "/") <> "/"
+  }
+}
+
+def head(title: String) -> String {
+  viewport = "width=device-width, initial-scale=1"
+  element("head", [], [
+    void("meta", [("charset", "utf-8")]),
+    void("meta", [("name", "viewport"), ("content", viewport)]),
+    element("title", [], [escape(title <> " · beap")]),
+    void("link", [("rel", "icon"), ("href", "data:,")]),
+    void("link", [("rel", "stylesheet"), ("href", "/_beap/style.css")]),
+    element("script", [("src", "/_beap/app.js"), ("defer", "")], []),
+  ])
+}
+
+def header(version: String) -> String {
+  element("header", [("class", "top")], [
+    element("a", [("class", "brand"), ("href", "/")], ["beap"]),
+    element("span", [("class", "version")], [escape("v" <> version)]),
+  ])
+}
+
+/// `/ Development / projects /`: every folder links to itself, but the
+/// current one.
+def breadcrumbs(path: List(String)) -> String {
+  depth = list.length(path)
+  root = case path {
+    [] -> current("/")
+    _ -> link("/", ["/"])
+  }
+  folders = list.index_map(path, fn(name, index) {
+    crumb = case index + 1 == depth {
+      True -> current(escape(name))
+      False -> link(folder_href(list.take(path, index + 1)), [escape(name)])
+    }
+    crumb <> separator("/")
+  })
+  nav = [("class", "crumbs"), ("aria-label", "Folder")]
+  element("nav", nav, [root, separator("") | folders])
+}
+
+def current(content: String) -> String {
+  element("span", [("aria-current", "page")], [content])
+}
+
+def separator(content: String) -> String {
+  element("span", [("class", "sep")], [content])
+}
+
+def upload_zone(page: Page) -> String {
+  case page.uploads {
+    False ->
+      element("p", [("class", "readonly")], [
+        "Read-only: uploads are disabled.",
+      ])
+    True -> {
+      drop = [
+        ("class", "drop"),
+        ("id", "drop"),
+        ("aria-labelledby", "drop-title"),
+        ("data-target", "/upload" <> paths.encode(page.path) <> "/"),
+        ("data-max", int.to_string(page.max_upload)),
+      ]
+      picker = [
+        ("type", "file"),
+        ("id", "picker"),
+        ("multiple", ""),
+        ("hidden", ""),
+      ]
+      curl = [
+        ("class", "link-button"),
+        ("data-copy", share.curl_upload_any(page.origin, page.path)),
+        ("data-copied", "Copied the curl upload command"),
+      ]
+      uploads = [
+        ("class", "uploads"),
+        ("id", "uploads"),
+        ("aria-label", "Uploads"),
+      ]
+      element("section", drop, [
+        icon("upload"),
+        element(
+          "p",
+          [("class", "drop-title"), ("id", "drop-title")],
+          ["Drop files to upload"],
+        ),
+        element("p", [], [
+          button([("class", "link-button"), ("id", "browse")], [
+            "Browse files",
+          ]),
+          void("input", picker),
+        ]),
+        element("p", [("class", "hint")], [
+          "Up to " <> fs.format_size(page.max_upload) <> " each · ",
+          "or from a terminal: ",
+          button(curl, ["copy curl command"]),
+        ]),
+      ]) <> element("ol", uploads, [])
+    }
+  }
+}
+
+def listing(page: Page) -> String {
+  parent = case list.reverse(page.path) {
+    [] -> []
+    [_ | rest] -> [parent_row(list.reverse(rest))]
+  }
+  rows = case page.entries {
+    [] ->
+      [
+        element("tr", [("class", "empty")], [
+          element("td", [("colspan", "3")], ["This folder is empty"]),
+        ]),
+      ]
+    entries -> list.map(entries, entry_row(page, _))
+  }
+  head = element("tr", [], [
+    element("th", [("scope", "col")], ["Name"]),
+    element("th", [("scope", "col"), ("class", "size")], ["Size"]),
+    element("th", [("scope", "col"), ("class", "actions")], [
+      element("span", [("class", "sr")], ["Actions"]),
+    ]),
+  ])
+  element("table", [("class", "listing")], [
+    element("thead", [], [head]),
+    element("tbody", [], list.append(parent, rows)),
+  ])
+}
+
+def parent_row(path: List(String)) -> String {
+  element("tr", [("class", "dir")], [
+    element("td", [("class", "name")], [
+      link(folder_href(path), [icon("up"), element("span", [], [".."])]),
+    ]),
+    element("td", [("class", "size")], []),
+    element("td", [("class", "actions")], []),
+  ])
+}
+
+def entry_row(page: Page, entry: Entry) -> String {
+  path = list.append(page.path, [entry.name])
+  case entry.kind {
+    fs.Directory -> folder_row(entry, path)
+    fs.File -> file_row(page, entry, path)
+  }
+}
+
+def folder_row(entry: Entry, path: List(String)) -> String {
+  href = folder_href(path)
+  name = element("span", [], [escape(entry.name <> "/")])
+  element("tr", [("class", "dir")], [
+    element("td", [("class", "name")], [link(href, [icon("folder"), name])]),
+    element("td", [("class", "size")], ["—"]),
+    element("td", [("class", "actions")], [
+      action("a", [("href", href)], "Open " <> entry.name, "Open", "open"),
+    ]),
+  ])
+}
+
+def file_row(page: Page, entry: Entry, path: List(String)) -> String {
+  download = [
+    ("href", "/files" <> paths.encode(path)),
+    ("download", entry.name),
+  ]
+  size = fs.format_size(entry.size)
+  copy_link = [
+    ("type", "button"),
+    ("data-copy", share.file_url(page.origin, path)),
+    ("data-copied", "Copied the link"),
+  ]
+  element("tr", [], [
+    element("td", [("class", "name")], [
+      element("a", download, [
+        icon(file_icon(entry.name)),
+        element("span", [], [escape(entry.name)]),
+        element("span", [("class", "inline-size")], [size]),
+      ]),
+    ]),
+    element("td", [("class", "size")], [size]),
+    element("td", [("class", "actions")], [
+      action(
+        "button",
+        copy_link,
+        "Copy link to " <> entry.name,
+        "Copy link",
+        "copy",
+      ),
+      curl_menu(page, entry.name, path),
+      action("a", download, "Download " <> entry.name, "Download", "download"),
+    ]),
+  ])
+}
+
+/// The curl commands sit in a menu, which `<details>` makes usable from the
+/// keyboard without any script.
+def curl_menu(page: Page, name: String, path: List(String)) -> String {
+  download = copy_item(
+    share.curl_download(page.origin, path),
+    "Copy curl download command",
+    "Copied the curl download command",
+  )
+  upload = case page.uploads {
+    True ->
+      [
+        copy_item(
+          share.curl_upload(page.origin, page.path, name),
+          "Copy curl upload command",
+          "Copied the curl upload command",
+        ),
+      ]
+    False -> []
+  }
+  summary = [
+    ("class", "act"),
+    ("aria-label", "curl commands for " <> name),
+    ("title", "curl commands"),
+  ]
+  element("details", [("class", "menu")], [
+    element("summary", summary, [icon("terminal")]),
+    element("div", [("class", "menu-list")], [download | upload]),
+  ])
+}
+
+def copy_item(command: String, label: String, copied: String) -> String {
+  button([("data-copy", command), ("data-copied", copied)], [label])
+}
+
+/// An icon button or link, named for screen readers and tooltips.
+def action(
+  tag: String,
+  attributes: Attributes,
+  label: String,
+  title: String,
+  icon_name: String,
+) -> String {
+  named = [("class", "act"), ("aria-label", label), ("title", title)]
+  element(tag, list.append(named, attributes), [icon(icon_name)])
+}
+
+def button(attributes: Attributes, children: List(String)) -> String {
+  element("button", [("type", "button") | attributes], children)
+}
+
+/// Folders end with a slash, so they and their files share one URL space.
+def folder_href(path: List(String)) -> String {
+  case path {
+    [] -> "/"
+    _ -> "/files" <> paths.encode(path) <> "/"
+  }
+}
+
+def link(href: String, children: List(String)) -> String {
+  element("a", [("href", href)], children)
+}
+
+/// `children` are HTML already; attribute values are escaped here.
+def element(
+  tag: String,
+  attributes: Attributes,
+  children: List(String),
+) -> String {
+  void(tag, attributes) <> string.concat(children) <> "</" <> tag <> ">"
+}
+
+/// An opening tag; an empty value makes a boolean attribute.
+def void(tag: String, attributes: Attributes) -> String {
+  rendered = list.map(attributes, fn(attribute) {
+    case attribute {
+      (name, "") -> " " <> name
+      (name, value) -> " " <> name <> "=\"" <> escape(value) <> "\""
+    }
+  })
+  "<" <> tag <> string.concat(rendered) <> ">"
+}
+
+pub def escape(text: String) -> String {
+  text
+  |> string.replace("&", "&amp;")
+  |> string.replace("<", "&lt;")
+  |> string.replace(">", "&gt;")
+  |> string.replace("\"", "&quot;")
+  |> string.replace("'", "&#39;")
+}
+
+def file_icon(name: String) -> String {
+  extension = case string.split(string.lowercase(name), ".") {
+    [_, _ | _] as parts -> list.last(parts) |> result.unwrap("")
+    _ -> ""
+  }
+  cond {
+    one_of(extension, archives) -> "archive"
+    one_of(extension, images) -> "image"
+    one_of(extension, media) -> "media"
+    _ -> "file"
+  }
+}
+
+def one_of(word: String, words: String) -> Bool {
+  word != "" and list.contains(string.split(words, " "), word)
+}
+
+const archives: String = "zip tar gz tgz bz2 xz zst 7z rar deb rpm dmg iso"
+
+const images: String = "png jpg jpeg gif webp svg bmp ico heic avif"
+
+const media: String = "mp4 mkv mov webm avi mp3 flac wav ogg m4a opus"
+
+def icon(name: String) -> String {
+  element(
+    "svg",
+    [("class", "icon"), ("aria-hidden", "true")],
+    [element("use", [("href", "#i-" <> name)], [])],
+  )
+}
+
+/// 16×16 line icons, drawn with the text colour.
+const icons: String = `<svg class="sprite" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+<symbol id="i-folder" viewBox="0 0 16 16"><path d="M1.75 3.25h4.4l1.6 1.6h6.5v7.9H1.75z"/></symbol>
+<symbol id="i-file" viewBox="0 0 16 16"><path d="M3.75 1.75h5.5l3 3v9.5h-8.5z"/><path d="M9.25 1.75v3h3"/></symbol>
+<symbol id="i-archive" viewBox="0 0 16 16"><path d="M3.75 1.75h5.5l3 3v9.5h-8.5z"/><path d="M7 3.5h1M7 5.5h1M7 7.5h1M6.5 9.75h2v2.5h-2z"/></symbol>
+<symbol id="i-image" viewBox="0 0 16 16"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5"/><circle cx="5.5" cy="6.25" r="1.25"/><path d="M14.25 10.25 10.5 6.5l-7 6.75"/></symbol>
+<symbol id="i-media" viewBox="0 0 16 16"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5"/><path d="M6.5 5.75v4.5l3.75-2.25z"/></symbol>
+<symbol id="i-up" viewBox="0 0 16 16"><path d="M5 5.75 8 2.75l3 3M8 2.75v6.5a3.5 3.5 0 0 0 3.5 3.5h1.75"/></symbol>
+<symbol id="i-open" viewBox="0 0 16 16"><path d="M6 3.5 10.5 8 6 12.5"/></symbol>
+<symbol id="i-copy" viewBox="0 0 16 16"><rect x="5.25" y="5.25" width="9" height="9" rx="1.5"/><path d="M10.75 5.25v-2a1.5 1.5 0 0 0-1.5-1.5h-6a1.5 1.5 0 0 0-1.5 1.5v6a1.5 1.5 0 0 0 1.5 1.5h2"/></symbol>
+<symbol id="i-terminal" viewBox="0 0 16 16"><path d="M2.75 4.25 6.25 8l-3.5 3.75M8 11.75h5.25"/></symbol>
+<symbol id="i-download" viewBox="0 0 16 16"><path d="M8 2.25v8.5M4.5 7.25 8 10.75l3.5-3.5M2.75 13.75h10.5"/></symbol>
+<symbol id="i-upload" viewBox="0 0 16 16"><path d="M8 10.75v-8.5M4.5 5.75 8 2.25l3.5 3.5M2.75 13.75h10.5"/></symbol>
+</svg>`

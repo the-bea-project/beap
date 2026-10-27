@@ -1,0 +1,7 @@
+/.beabuild
+*.beam
+*.ez
+erl_crash.dump
+/build
+
+/.beap-uploads

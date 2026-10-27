@@ -1,0 +1,177 @@
+// src/beap/internal/config.bea
+
+import argv
+import beap/internal/paths
+import beap/internal/runtime/runtime
+import gleam/erlang/atom
+import simplifile
+
+pub type Config {
+  Config(
+    app_version: String,
+    host: String,
+    port: Int,
+    /// The shared directory. A real, absolute path once `load` checked it.
+    root: String,
+    uploads: Bool,
+    /// The largest upload accepted, in bytes.
+    max_upload: Int,
+  )
+}
+
+pub type Command {
+  Serve(Config)
+  Help
+}
+
+pub const usage = "usage: beap [<host> <port>] [options]
+
+options:
+  --host HOST        interface to listen on (default 127.0.0.1, all: 0.0.0.0)
+  --port PORT        port to listen on (default 8000, any free one: 0)
+  --dir DIR          directory to share (default: the current directory)
+  --no-upload        share read-only
+  --max-upload SIZE  largest upload accepted, e.g. 500M or 4G (default 10G)
+  -h, --help         show this help"
+
+pub def defaults(app_version: String) -> Config {
+  Config(
+    app_version:,
+    host: "127.0.0.1",
+    port: 8000,
+    root: ".",
+    uploads: True,
+    max_upload: 10 * gib,
+  )
+}
+
+/// Reads the command line and checks the directory to share.
+pub def load() -> Result(Command, String) {
+  app_version = runtime.app_version(atom.create("beap"))
+  args = argv.load().arguments |> list.map(runtime.argument_bytes)
+  command = parse(args, defaults(app_version))?
+  case command {
+    Help -> Ok(Help)
+    Serve(config) -> {
+      root = shared_directory(config.root)?
+      Ok(Serve(Config(config | root:)))
+    }
+  }
+}
+
+def shared_directory(dir: String) -> Result(String, String) {
+  absolute = simplifile.resolve(dir)?
+    else _ -> Error("#{dir}: no such directory")
+  root = paths.real_path(absolute)? else _ -> Error("#{dir}: no such directory")
+  simplifile.is_directory(root) == Ok(True)
+    else Error("#{dir} is not a directory")
+  Ok(root)
+}
+
+/// The arguments over `defaults`. Options may come in any order; the
+/// original form, `beap <host> <port>`, still works.
+pub def parse(args: List(String), defaults: Config) -> Result(Command, String) {
+  read(args, defaults, [])
+}
+
+def read(
+  args: List(String),
+  config: Config,
+  positional: List(String),
+) -> Result(Command, String)
+
+def read([], config, positional) {
+  case list.reverse(positional) {
+    [] -> Ok(Serve(config))
+    [host, port] -> Ok(Serve(Config(config | host:, port: parse_port(port)?)))
+    _ -> Error("expected <host> <port>, or options")
+  }
+}
+
+def read(["-h" | _], _, _) {
+  Ok(Help)
+}
+
+def read(["--help" | _], _, _) {
+  Ok(Help)
+}
+
+def read(["--" | rest], config, positional) {
+  read(rest, config, positional)
+}
+
+def read(["--host", host | rest], config, positional) {
+  read(rest, Config(config | host:), positional)
+}
+
+def read(["--port", port | rest], config, positional) {
+  port = parse_port(port)?
+  read(rest, Config(config | port:), positional)
+}
+
+def read(["--dir", dir | rest], config, positional) {
+  read(rest, Config(config | root: dir), positional)
+}
+
+def read(["--no-upload" | rest], config, positional) {
+  read(rest, Config(config | uploads: False), positional)
+}
+
+def read(["--max-upload", size | rest], config, positional) {
+  max_upload = parse_size(size)?
+  read(rest, Config(config | max_upload:), positional)
+}
+
+def read([arg | rest], config, positional) {
+  case arg, string.split_once(arg, "=") {
+    "--" <> _, Ok((option, value)) ->
+      read([option, value | rest], config, positional)
+    "-" <> _, _ -> option_error(arg)
+    _, _ -> read(rest, config, [arg | positional])
+  }
+}
+
+def option_error(option: String) -> Result(Command, String) {
+  case list.contains(["--host", "--port", "--dir", "--max-upload"], option) {
+    True -> Error("#{option} needs a value")
+    False -> Error("unknown option #{option}")
+  }
+}
+
+pub def parse_port(text: String) -> Result(Int, String) {
+  port = int.parse(text)? else _ -> Error("invalid port: #{text}")
+  port >= 0 and port <= 65_535 else Error("invalid port: #{text}")
+  Ok(port)
+}
+
+const kib: Int = 1024
+
+const mib: Int = 1_048_576
+
+const gib: Int = 1_073_741_824
+
+const tib: Int = 1_099_511_627_776
+
+/// `4096`, `500K`, `500M`, `4G`, `1T` (also `4GB` or `4GiB`): bytes, in
+/// multiples of 1024.
+pub def parse_size(text: String) -> Result(Int, String) {
+  invalid = Error("invalid size: #{text} (try 500M or 4G)")
+  digits = text |> string.uppercase |> drop_suffix("IB") |> drop_suffix("B")
+  (number, unit) = case string.last(digits) {
+    Ok("K") -> (string.drop_end(digits, 1), kib)
+    Ok("M") -> (string.drop_end(digits, 1), mib)
+    Ok("G") -> (string.drop_end(digits, 1), gib)
+    Ok("T") -> (string.drop_end(digits, 1), tib)
+    _ -> (digits, 1)
+  }
+  size = int.parse(number)? else _ -> invalid
+  size > 0 else invalid
+  Ok(size * unit)
+}
+
+def drop_suffix(text: String, suffix: String) -> String {
+  case string.ends_with(text, suffix) {
+    True -> string.drop_end(text, string.length(suffix))
+    False -> text
+  }
+}

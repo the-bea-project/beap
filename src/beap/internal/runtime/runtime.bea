@@ -1,0 +1,65 @@
+//// The few operations Beap needs from the Erlang runtime, in `beap_ffi.erl`.
+
+import gleam/erlang/atom.{type Atom}
+import simplifile.{type FileError}
+
+@external(erlang, "beap_ffi", "app_version")
+pub def app_version(app_name: Atom) -> String
+
+/// Stop the VM with an exit status.
+@external(erlang, "beap_ffi", "halt")
+pub def halt(status: Int) -> Nil
+
+/// Whether a server could listen on `host:port`: why not, if it can't.
+@external(erlang, "beap_ffi", "check_listen")
+pub def check_listen(host: String, port: Int) -> Result(Nil, String)
+
+/// The machine's IPv4 addresses, loopback excluded.
+@external(erlang, "beap_ffi", "local_addresses")
+pub def local_addresses() -> List(String)
+
+/// The names in a directory, whatever the locale (see `beap_ffi.erl`).
+@external(erlang, "beap_ffi", "read_directory")
+pub def read_directory(path: String) -> Result(List(String), FileError)
+
+/// A command-line argument from `argv` as it was typed, whatever the locale
+/// (see `beap_ffi.erl`).
+@external(erlang, "beap_ffi", "argument_bytes")
+pub def argument_bytes(argument: String) -> String
+
+/// The target of a symbolic link; `Einval` when the path is not a link.
+@external(erlang, "beap_ffi", "read_link")
+pub def read_link(path: String) -> Result(String, FileError)
+
+/// A file open for writing, owned by the process that opened it.
+pub type WriteHandle
+
+/// Create a new file and open it for writing. Fails with `Eexist` if
+/// anything is at `path` already, a symbolic link included.
+@external(erlang, "beap_ffi", "open_exclusive")
+pub def open_exclusive(path: String) -> Result(WriteHandle, FileError)
+
+@external(erlang, "beap_ffi", "write")
+pub def write(file: WriteHandle, data: BitArray) -> Result(Nil, FileError)
+
+/// Flush the file's data to the disk.
+@external(erlang, "beap_ffi", "sync")
+pub def sync(file: WriteHandle) -> Result(Nil, FileError)
+
+@external(erlang, "beap_ffi", "close")
+pub def close(file: WriteHandle) -> Result(Nil, FileError)
+
+/// Watches a temporary file for the calling process.
+pub type Watcher
+
+/// Delete `path` if the calling process exits before `unwatch`.
+@external(erlang, "beap_ffi", "watch")
+pub def watch(path: String) -> Watcher
+
+@external(erlang, "beap_ffi", "unwatch")
+pub def unwatch(watcher: Watcher) -> Nil
+
+/// Drop the progress reports `ewe.read_body_chunk` left in this process's
+/// mailbox (see `beap_ffi.erl`). Call it before each read.
+@external(erlang, "beap_ffi", "discard_body_progress")
+pub def discard_body_progress() -> Nil

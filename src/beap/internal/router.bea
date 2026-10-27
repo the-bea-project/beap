@@ -1,0 +1,301 @@
+//// Requests to responses.
+////
+//// - `GET /` and `GET /files/<folder>/`: the folder's page
+//// - `GET /files/<file>`: the file, as a download
+//// - `PUT /upload/<folder>/<name>`: an upload, saved in that folder
+//// - `GET /_beap/...`: the interface's stylesheet and script
+
+import beap/internal/assets
+import beap/internal/config.{type Config}
+import beap/internal/fs
+import beap/internal/html
+import beap/internal/paths.{type PathError}
+import beap/internal/share
+import beap/internal/upload
+import ewe.{type Body, type Connection}
+import gleam/http
+import gleam/http/request.{type Request}
+import gleam/http/response.{type Response}
+import simplifile
+
+pub type Context {
+  Context(config: Config, staging: String)
+}
+
+pub def handle(req: Request(Connection), ctx: Context) -> Response(Body) {
+  use <- log(req)
+  case req.method, paths.split(req.path) {
+    http.Get, [] | http.Head, [] -> folder(req, ctx, [])
+    http.Get, ["files" | path] | http.Head, ["files" | path] ->
+      files(req, ctx, path)
+    http.Put, ["upload" | path] -> receive(req, ctx, path)
+    http.Get, ["_beap", "style.css"] -> asset(assets.style, "text/css")
+    http.Get, ["_beap", "app.js"] -> asset(assets.script, "text/javascript")
+    _, ["upload" | _] -> method_not_allowed("PUT")
+    http.Get, _ | http.Head, _ -> text(404, "Not found")
+    _, _ -> method_not_allowed("GET, HEAD")
+  }
+}
+
+/// Prints one line per request once it is answered:
+/// `192.168.1.20 PUT /upload/notes.txt 201`.
+def log(
+  req: Request(Connection),
+  next: fn() -> Response(Body),
+) -> Response(Body) {
+  response = next()
+  client = case ewe.get_client_info(req.body) {
+    ewe.TcpSocketAddress(ip_address: | _) ->
+      ewe.ip_address_to_string(ip_address)
+    ewe.UnixSocketAddress(path:) -> path
+  }
+  method = http.method_to_string(req.method) |> string.uppercase
+  io.println(
+    "#{client} #{method} #{req.path} #{int.to_string(response.status)}",
+  )
+  response
+}
+
+def files(
+  req: Request(Connection),
+  ctx: Context,
+  raw: List(String),
+) -> Response(Body) {
+  path = paths.decode(raw)? else error -> path_error(error)
+  file = paths.resolve(ctx.config.root, path)? else error -> path_error(error)
+  info = simplifile.file_info(file)? else _ -> text(404, "Not found")
+  case simplifile.file_info_type(info), string.ends_with(req.path, "/") {
+    simplifile.Directory, True -> folder(req, ctx, path)
+    simplifile.Directory, False ->
+      redirect("/files" <> paths.encode(path) <> "/")
+    simplifile.File, _ -> download(req, file, path, info.size)
+    _, _ -> text(403, "Not a regular file")
+  }
+}
+
+def folder(
+  req: Request(Connection),
+  ctx: Context,
+  path: List(String),
+) -> Response(Body) {
+  dir = paths.resolve(ctx.config.root, path)? else error -> path_error(error)
+  entries = fs.entries(dir)?
+    else error -> text(
+      500,
+      "Cannot read this folder: #{simplifile.describe_error(error)}",
+    )
+  // Leave out what can't be opened from here: the staging directory, and
+  // links leading out of the root.
+  entries = list.filter(entries, fn(entry) {
+    case path, entry.name, entry.link {
+      [], name, _ if name == paths.staging_name -> False
+      _, name, True ->
+        result.is_ok(paths.resolve(ctx.config.root, list.append(path, [name])))
+      _, _, False -> True
+    }
+  })
+  config = ctx.config
+  html.Page(
+    version: config.app_version,
+    path:,
+    entries:,
+    origin: origin(req, config),
+    uploads: config.uploads,
+    max_upload: config.max_upload,
+  )
+  |> html.page
+  |> ewe.Text
+  |> response.set_body(response.new(200), _)
+  |> page_headers
+}
+
+/// Files are always sent as downloads, never shown as pages: an uploaded
+/// `.html` file can't run scripts on Beap's origin.
+def download(
+  req: Request(Connection),
+  file: String,
+  path: List(String),
+  size: Int,
+) -> Response(Body) {
+  name = list.last(path) |> result.unwrap("download")
+  range = case request.get_header(req, "range") {
+    Ok(header) -> parse_range(header, size)
+    Error(_) -> Ok(None)
+  }
+  Ok(range) = range else unsatisfiable(size)
+  (status, offset, length) = case range {
+    Some((start, length)) -> (206, start, length)
+    None -> (200, 0, size)
+  }
+  body = ewe.file(req.body, file, offset: Some(offset), limit: Some(length))?
+    else error -> file_error(error)
+  response.new(status)
+  |> response.set_body(body)
+  |> response.set_header("content-type", "application/octet-stream")
+  |> response.set_header("content-disposition", content_disposition(name))
+  |> response.set_header("accept-ranges", "bytes")
+  |> response.set_header("x-content-type-options", "nosniff")
+  |> response.set_header("content-security-policy", "sandbox")
+  |> fn(response) {
+    case status {
+      206 ->
+        response.set_header(
+          response,
+          "content-range",
+          "bytes #{int.to_string(offset)}-#{int.to_string(offset + length - 1)}/#{int.to_string(size)}",
+        )
+      _ -> response
+    }
+  }
+}
+
+/// A single `bytes=` range, as `(offset, length)`. `Ok(None)` for one Beap
+/// ignores (several ranges, other units, malformed), and sends the whole
+/// file; `Error` for a range outside the file.
+pub def parse_range(
+  header: String,
+  size: Int,
+) -> Result(Option((Int, Int)), Nil) {
+  "bytes=" <> spec = string.trim(header) else Ok(None)
+  (first, last) = string.split_once(spec, "-")? else _ -> Ok(None)
+  case int.parse(first), int.parse(last), first, last {
+    // `bytes=-500`: the last 500 bytes
+    _, Ok(suffix), "", _ if suffix > 0 and size > 0 ->
+      Ok(Some((int.max(size - suffix, 0), int.min(suffix, size))))
+    Ok(start), _, _, "" if start < size -> Ok(Some((start, size - start)))
+    Ok(start), Ok(end), _, _ if start <= end and start < size ->
+      Ok(Some((start, int.min(end, size - 1) - start + 1)))
+    Ok(_), _, _, "" | Ok(_), Ok(_), _, _ | _, Ok(_), "", _ -> Error(Nil)
+    _, _, _, _ -> Ok(None)
+  }
+}
+
+def unsatisfiable(size: Int) -> Response(Body) {
+  text(416, "Range not satisfiable")
+  |> response.set_header("content-range", "bytes */#{int.to_string(size)}")
+}
+
+/// `attachment; filename="résumé.pdf"` for old clients, made ASCII, and the
+/// exact name in RFC 5987's `filename*`.
+pub def content_disposition(name: String) -> String {
+  fallback = name |> string.to_graphemes |> list.map(ascii) |> string.concat
+  "attachment; filename=\"#{fallback}\"; filename*=UTF-8''#{paths.encode_segment(name)}"
+}
+
+/// Printable ASCII but quotes and backslashes, which need escaping in a
+/// quoted string, or `_`.
+def ascii(char: String) -> String {
+  case char, <<char:utf8>> {
+    "\"", _ | "\\", _ -> "_"
+    _, <<byte>> if byte >= 0x20 and byte < 0x7F -> char
+    _, _ -> "_"
+  }
+}
+
+def receive(
+  req: Request(Connection),
+  ctx: Context,
+  raw: List(String),
+) -> Response(Body) {
+  config = ctx.config
+  config.uploads else text(403, "Uploads are disabled on this server")
+  path = paths.decode(raw)? else error -> path_error(error)
+  [name | folder] = list.reverse(path)
+    else text(400, "Missing file name: PUT /upload/<folder>/<name>")
+  folder = list.reverse(folder)
+  dir = paths.resolve(config.root, folder)? else error -> path_error(error)
+  simplifile.is_directory(dir) == Ok(True) else text(404, "No such folder")
+  saved = upload.save(
+    req,
+    in: dir,
+    named: name,
+    staging: ctx.staging,
+    limit: config.max_upload,
+  )? else error -> upload_error(error, config)
+  url = share.file_url(origin(req, config), list.append(folder, [saved.name]))
+  text(201, "Saved #{saved.name} (#{fs.format_size(saved.size)})\n#{url}")
+  |> response.set_header(
+    "location",
+    "/files" <> paths.encode(list.append(folder, [saved.name])),
+  )
+}
+
+def origin(req: Request(Connection), config: Config) -> String {
+  share.origin(request.get_header(req, "host"), config.host, config.port)
+}
+
+def asset(content: String, content_type: String) -> Response(Body) {
+  response.new(200)
+  |> response.set_body(ewe.Text(content))
+  |> response.set_header("content-type", content_type <> "; charset=utf-8")
+  |> response.set_header("cache-control", "no-cache")
+  |> response.set_header("x-content-type-options", "nosniff")
+}
+
+/// The page loads nothing but Beap's own stylesheet and script.
+def page_headers(response: Response(Body)) -> Response(Body) {
+  response
+  |> response.set_header("content-type", "text/html; charset=utf-8")
+  |> response.set_header("cache-control", "no-cache")
+  |> response.set_header(
+    "content-security-policy",
+    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  )
+  |> response.set_header("x-content-type-options", "nosniff")
+  |> response.set_header("referrer-policy", "no-referrer")
+  |> response.set_header("x-frame-options", "DENY")
+}
+
+def text(status: Int, message: String) -> Response(Body) {
+  response.new(status)
+  |> response.set_body(ewe.Text(message <> "\n"))
+  |> response.set_header("content-type", "text/plain; charset=utf-8")
+  |> response.set_header("x-content-type-options", "nosniff")
+}
+
+def redirect(location: String) -> Response(Body) {
+  text(301, "Moved to #{location}")
+  |> response.set_header("location", location)
+}
+
+def method_not_allowed(allowed: String) -> Response(Body) {
+  text(405, "Method not allowed")
+  |> response.set_header("allow", allowed)
+}
+
+def path_error(error: PathError) -> Response(Body) {
+  case error {
+    paths.BadPath -> text(400, "Invalid path")
+    paths.NotFound -> text(404, "Not found")
+    paths.Forbidden -> text(403, "Forbidden")
+    paths.Unreadable(error) ->
+      text(500, "Cannot read this path: #{simplifile.describe_error(error)}")
+  }
+}
+
+def file_error(error: ewe.FileError) -> Response(Body) {
+  case error {
+    ewe.NotFound -> text(404, "Not found")
+    ewe.AccessDenied -> text(403, "This file isn't readable")
+    ewe.IsDirectory -> text(400, "This is a folder")
+    _ -> text(500, "Cannot read this file")
+  }
+}
+
+def upload_error(error: upload.UploadError, config: Config) -> Response(Body) {
+  case error {
+    upload.InvalidName -> text(400, "Invalid file name")
+    upload.TooLarge ->
+      text(
+        413,
+        "Larger than the #{fs.format_size(config.max_upload)} upload limit",
+      )
+      |> response.set_header("connection", "close")
+    upload.Interrupted -> text(400, "The upload didn't complete")
+    upload.NoSpace -> text(507, "Not enough space left on the server's disk")
+    upload.Denied -> text(403, "This folder isn't writable")
+    upload.Conflict -> text(409, "Too many files with this name already")
+    upload.Failed(error) ->
+      text(500, "Upload failed: #{simplifile.describe_error(error)}")
+  }
+}

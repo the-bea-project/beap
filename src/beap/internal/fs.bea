@@ -1,0 +1,80 @@
+//// Directory listings and human-readable sizes.
+
+import beap/internal/runtime/runtime
+import simplifile.{type FileError}
+
+pub type Kind {
+  Directory
+  File
+}
+
+pub type Entry {
+  name: String,
+  kind: Kind,
+  size: Int,
+  /// Whether the name is a symbolic link (to an entry of `kind`).
+  link: Bool,
+}
+
+/// The entries of one directory, folders first, then by name. Symbolic
+/// links are followed; what is neither a folder nor a regular file
+/// (sockets, devices, dangling links) is left out, since it can't be
+/// browsed or downloaded.
+pub def entries(dir: String) -> Result(List(Entry), FileError) {
+  names = runtime.read_directory(dir)?
+  names
+  |> list.filter_map(fn(name) { entry(dir, name) })
+  |> list.sort(compare)
+  |> Ok
+}
+
+def entry(dir: String, name: String) -> Result(Entry, Nil) {
+  path = dir <> "/" <> name
+  info = simplifile.file_info(path)? else _ -> Error(Nil)
+  link = simplifile.is_symlink(path) == Ok(True)
+  case simplifile.file_info_type(info) {
+    simplifile.Directory -> Ok(Entry(name:, kind: Directory, size: 0, link:))
+    simplifile.File -> Ok(Entry(name:, kind: File, size: info.size, link:))
+    _ -> Error(Nil)
+  }
+}
+
+/// Folders before files, then alphabetically, ignoring case.
+pub def compare(a: Entry, b: Entry) -> Order {
+  case a.kind, b.kind {
+    Directory, File -> Lt
+    File, Directory -> Gt
+    _, _ ->
+      string.compare(string.lowercase(a.name), string.lowercase(b.name))
+      |> order.break_tie(string.compare(a.name, b.name))
+  }
+}
+
+/// `512 B`, `3.2 KB`, `48 MB`, `512 GB`: multiples of 1024, with one
+/// decimal below 100.
+pub def format_size(bytes: Int) -> String {
+  format_in(bytes, 1, ["B", "KB", "MB", "GB", "TB", "PB"])
+}
+
+def format_in(bytes: Int, unit: Int, names: List(String)) -> String
+
+def format_in(bytes, unit, [_, next | larger]) if bytes >= unit * 1024 {
+  format_in(bytes, unit * 1024, [next | larger])
+}
+
+def format_in(bytes, 1, _) {
+  "#{int.to_string(bytes)} B"
+}
+
+def format_in(bytes, unit, [name | _]) {
+  tenths = (bytes * 10 + unit / 2) / unit
+  case tenths < 1000, tenths % 10 {
+    True, 0 | False, _ -> "#{int.to_string(tenths / 10)} #{name}"
+    True, decimal ->
+      "#{int.to_string(tenths / 10)}.#{int.to_string(decimal)} #{name}"
+  }
+}
+
+def format_in(bytes, _, []) {
+  "#{int.to_string(bytes)} B"
+}

@@ -1,0 +1,63 @@
+//// Links and curl commands for sharing, built from the address the visitor
+//// used to reach Beap, so that they work from their machine.
+
+import beap/internal/paths
+
+/// `http://<host>[:<port>]` as the client addressed the server: from the
+/// request's `Host` header, which already brackets an IPv6 address and
+/// carries the port. Without one (HTTP/1.0), the address Beap listens on.
+pub def origin(
+  host_header: Result(String, Nil),
+  host: String,
+  port: Int,
+) -> String {
+  case host_header {
+    Ok(authority) if authority != "" -> "http://" <> authority
+    _ -> "http://" <> authority(host, port)
+  }
+}
+
+/// `host:port`, with an IPv6 address in brackets.
+pub def authority(host: String, port: Int) -> String {
+  case string.contains(host, ":") {
+    True -> "[#{host}]:#{int.to_string(port)}"
+    False -> "#{host}:#{int.to_string(port)}"
+  }
+}
+
+pub def file_url(origin: String, path: List(String)) -> String {
+  origin <> "/files" <> paths.encode(path)
+}
+
+/// Where to `PUT` a file to save it as `dir/name`.
+pub def upload_url(origin: String, dir: List(String), name: String) -> String {
+  origin <> "/upload" <> paths.encode(list.append(dir, [name]))
+}
+
+/// `curl -O` names the download after the URL as it is, still
+/// percent-encoded, so a name that needs encoding is given with `-o`.
+pub def curl_download(origin: String, path: List(String)) -> String {
+  url = quote(file_url(origin, path))
+  name = list.last(path) |> result.unwrap("download")
+  case paths.encode_segment(name) == name {
+    True -> "curl -fL -O #{url}"
+    False -> "curl -fL -o #{quote(name)} #{url}"
+  }
+}
+
+/// `-T` streams the file from the disk (`--data-binary @file` would make
+/// curl read all of it into memory first).
+pub def curl_upload(origin: String, dir: List(String), name: String) -> String {
+  "curl -T #{quote(name)} #{quote(upload_url(origin, dir, name))}"
+}
+
+/// For any file: with a URL ending in `/`, curl appends the file's name.
+pub def curl_upload_any(origin: String, dir: List(String)) -> String {
+  url = origin <> "/upload" <> paths.encode(dir) <> "/"
+  "curl -T FILE #{quote(url)}"
+}
+
+/// Single-quotes a word for POSIX shells.
+pub def quote(word: String) -> String {
+  "'" <> string.replace(word, "'", "'\\''") <> "'"
+}

@@ -1,0 +1,150 @@
+//// Request paths and the files they name under the shared root.
+////
+//// A request path is split into segments, each percent-decoded and checked
+//// on its own, so an encoded `..` or `/` is refused like a plain one. The
+//// file is then resolved the way `realpath(3)` does it: every symbolic link
+//// is followed, and the result must be the root or lie inside it. A link to
+//// somewhere else in the root works; a link leading out of it is refused,
+//// whatever its target is called.
+
+import beap/internal/runtime/runtime
+import simplifile
+
+pub type PathError {
+  /// An empty, `.` or `..` segment, an encoded `/` or NUL, or a malformed
+  /// percent-encoding.
+  BadPath
+  NotFound
+  /// Outside the root, or inside the staging directory.
+  Forbidden
+  Unreadable(simplifile.FileError)
+}
+
+/// The directory in the root where uploads are written until they are
+/// complete. It is never listed, served or written to through a path.
+pub const staging_name = ".beap-uploads"
+
+/// The non-empty segments of a raw URL path (`/files/a%20b/` gives
+/// `["files", "a%20b"]`), still encoded.
+pub def split(path: String) -> List(String) {
+  string.split(path, "/") |> list.filter(fn(segment) { segment != "" })
+}
+
+pub def decode(raw: List(String)) -> Result(List(String), PathError) {
+  list.try_map(raw, decode_segment)
+}
+
+def decode_segment(raw: String) -> Result(String, PathError) {
+  segment = uri.percent_decode(raw)? else _ -> Error(BadPath)
+  valid_segment(segment) else Error(BadPath)
+  Ok(segment)
+}
+
+/// A name that can only mean one entry of one directory.
+pub def valid_segment(segment: String) -> Bool {
+  case segment {
+    "" | "." | ".." -> False
+    _ -> not list.any(["/", "\u{0}"], string.contains(segment, _))
+  }
+}
+
+/// The real path of `segments` under `root` (itself a real path). It must
+/// exist, and lie in the root but not in the staging directory.
+pub def resolve(
+  root: String,
+  segments: List(String),
+) -> Result(String, PathError) {
+  path = real_path(join(root, segments))?
+  inside(root, path) and not inside(join(root, [staging_name]), path)
+    else Error(Forbidden)
+  Ok(path)
+}
+
+pub def join(root: String, segments: List(String)) -> String {
+  string.join([root | segments], "/")
+}
+
+/// Is `path` the directory `dir` or inside it? Both are real paths, so
+/// comparing whole components is enough.
+pub def inside(dir: String, path: String) -> Bool {
+  dir == "/" or path == dir or string.starts_with(path, dir <> "/")
+}
+
+/// The absolute path to an existing file with every `.`, `..` and symbolic
+/// link resolved, like `realpath(3)`.
+pub def real_path(path: String) -> Result(String, PathError) {
+  walk([], string.split(path, "/"), 0)
+}
+
+/// `resolved` holds the components resolved so far, last first; `rest` the
+/// ones still to go.
+def walk(
+  resolved: List(String),
+  rest: List(String),
+  links: Int,
+) -> Result(String, PathError)
+
+def walk(resolved, [], _) {
+  Ok("/" <> string.join(list.reverse(resolved), "/"))
+}
+
+def walk(resolved, ["" | rest], links) {
+  walk(resolved, rest, links)
+}
+
+def walk(resolved, ["." | rest], links) {
+  walk(resolved, rest, links)
+}
+
+def walk(resolved, [".." | rest], links) {
+  walk(list.drop(resolved, 1), rest, links)
+}
+
+def walk(resolved, [name | rest], links) {
+  path = "/" <> string.join(list.reverse([name | resolved]), "/")
+  case runtime.read_link(path) {
+    Error(simplifile.Einval) -> walk([name | resolved], rest, links)
+    Ok(target) -> {
+      // The same limit as Linux, against link loops.
+      links < 40 else Error(Unreadable(simplifile.Eloop))
+      base = case target {
+        "/" <> _ -> []
+        _ -> resolved
+      }
+      walk(base, list.append(string.split(target, "/"), rest), links + 1)
+    }
+    Error(simplifile.Enoent) | Error(simplifile.Enotdir) -> Error(NotFound)
+    Error(simplifile.Eacces) -> Error(Forbidden)
+    Error(error) -> Error(Unreadable(error))
+  }
+}
+
+/// `/a/b%20c`: segments as an absolute URL path.
+pub def encode(segments: List(String)) -> String {
+  segments
+  |> list.map(fn(segment) { "/" <> encode_segment(segment) })
+  |> string.concat
+}
+
+/// Percent-encodes all but the unreserved characters of RFC 3986, so the
+/// result is safe in a URL path, in HTML and inside shell quotes.
+pub def encode_segment(segment: String) -> String {
+  encode_bytes(<<segment:utf8>>, "")
+}
+
+def encode_bytes(bytes: BitArray, encoded: String) -> String {
+  case bytes {
+    <<byte, rest:bytes>> -> encode_bytes(rest, encoded <> encode_byte(byte))
+    _ -> encoded
+  }
+}
+
+def encode_byte(byte: Int) -> String {
+  char = bit_array.to_string(<<byte>>) |> result.unwrap("")
+  case char != "" and string.contains(unreserved, char) {
+    True -> char
+    False -> "%" <> string.pad_start(int.to_base16(byte), 2, "0")
+  }
+}
+
+const unreserved: String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"

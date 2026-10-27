@@ -1,0 +1,78 @@
+//// Starting the HTTP server.
+////
+//// Ewe gives every connection its own process: a slow upload only holds
+//// its own connection, and others are browsed and served meanwhile.
+
+import beap/internal/config.{type Config, Config}
+import beap/internal/paths
+import beap/internal/router.{Context}
+import beap/internal/runtime/runtime
+import beap/internal/share
+import beap/internal/upload
+import ewe
+import gleam/otp/actor
+import simplifile
+
+pub type Started {
+  Started(
+    /// The port listened on: the one asked for, or the free one picked for 0.
+    port: Int,
+    /// Whether uploads are accepted.
+    uploads: Bool,
+    /// Why uploads are off although they were asked for.
+    upload_problem: Option(String),
+  )
+}
+
+pub def start(config: Config) -> Result(Started, String) {
+  address = share.authority(config.host, config.port)
+  runtime.check_listen(config.host, config.port)?
+    else reason -> Error("cannot listen on #{address}: #{reason}")
+  staging = staging_directory(config)
+  config = Config(config | uploads: result.is_ok(staging))
+  ctx = Context(config:, staging: result.unwrap(staging, ""))
+  // Uploads may pause (a busy disk on the sending side, a slow link):
+  // allow a minute between two pieces of a body.
+  http1 = ewe.Http1Options(
+    ewe.default_http1_options() |
+    body_read_timeout: 60_000,
+  )
+  started =
+    ewe.new(fn(req) { router.handle(req, ctx) })
+    |> ewe.bind(config.host)
+    |> ewe.listening(config.port)
+    |> ewe.with_http1(http1)
+    |> ewe.quiet
+    |> ewe.start
+  server = started?
+    else error -> Error("cannot listen on #{address}: #{start_error(error)}")
+  port = case server.data {
+    ewe.TcpSocketAddress(port: | _) -> port
+    ewe.UnixSocketAddress(_) -> config.port
+  }
+  upload_problem = case staging {
+    Ok(_) -> None
+    Error(problem) -> problem
+  }
+  Ok(Started(port:, uploads: config.uploads, upload_problem:))
+}
+
+/// Where uploads are written: `Error(None)` when they are off, and
+/// `Error(Some(why))` when the directory can't be made.
+def staging_directory(config: Config) -> Result(String, Option(String)) {
+  config.uploads else Error(None)
+  upload.prepare(config.root)
+  |> result.map_error(fn(error) {
+    Some(
+      "cannot create #{paths.staging_name} in the shared directory: #{simplifile.describe_error(error)}",
+    )
+  })
+}
+
+def start_error(error: actor.StartError) -> String {
+  case error {
+    actor.InitFailed(reason) -> reason
+    actor.InitTimeout -> "timed out"
+    actor.InitExited(_) -> "the listener stopped"
+  }
+}

@@ -1,0 +1,80 @@
+// src/beap.bea
+
+import beap/internal/config.{type Config}
+import beap/internal/fs
+import beap/internal/runtime/runtime
+import beap/internal/server.{type Started}
+import beap/internal/share
+import gleam/erlang/process
+
+pub def main() {
+  case config.load() {
+    Ok(config.Serve(cfg)) -> serve(cfg)
+    Ok(config.Help) -> io.println(config.usage)
+    Error(message) -> exit_with(message <> "\n\n" <> config.usage)
+  }
+}
+
+def serve(cfg: Config) -> Nil {
+  started = server.start(cfg)? else message -> exit_with(message)
+  io.println(banner(cfg, started))
+  process.sleep_forever()
+}
+
+def exit_with(message: String) -> Nil {
+  io.println_error("beap: " <> message)
+  runtime.halt(1)
+}
+
+def banner(cfg: Config, started: Started) -> String {
+  urls =
+    addresses(cfg.host)
+    |> list.map(fn(line) {
+      (label, host) = line
+      "  #{label}   http://#{share.authority(host, started.port)}"
+    })
+  uploads = case started.uploads, started.upload_problem {
+    True, _ -> "on, up to #{fs.format_size(cfg.max_upload)} per file"
+    False, Some(problem) -> "off: #{problem}"
+    False, None -> "off (read-only)"
+  }
+  warning = case exposed(cfg.host) {
+    True ->
+      [
+        "",
+        "  Anyone who can reach these addresses can download every file here",
+        case started.uploads {
+          True -> "  and upload files. There is no authentication."
+          False -> "  There is no authentication."
+        },
+      ]
+    False -> []
+  }
+  [
+    ["beap #{cfg.app_version}", "", "  Sharing   #{cfg.root}"],
+    urls,
+    ["  Uploads   #{uploads}"],
+    warning,
+    ["", "Press Ctrl+C to stop."],
+  ]
+  |> list.flatten
+  |> string.join("\n")
+}
+
+/// Where to open Beap: for all interfaces, this machine and its network
+/// addresses.
+def addresses(host: String) -> List((String, String)) {
+  case host {
+    "0.0.0.0" -> [("Local  ", "127.0.0.1") | network()]
+    "::" -> [("Local  ", "::1") | network()]
+    _ -> [("Address", host)]
+  }
+}
+
+def network() -> List((String, String)) {
+  runtime.local_addresses() |> list.map(fn(ip) { ("Network", ip) })
+}
+
+def exposed(host: String) -> Bool {
+  not list.contains(["127.0.0.1", "localhost", "::1"], host)
+}
