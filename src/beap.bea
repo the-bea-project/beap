@@ -2,6 +2,7 @@
 
 import beap/internal/config.{type Config}
 import beap/internal/fs
+import beap/internal/paths
 import beap/internal/runtime/runtime
 import beap/internal/server.{type Started}
 import beap/internal/share
@@ -51,7 +52,7 @@ def banner(cfg: Config, started: Started) -> String {
     False -> []
   }
   [
-    ["beap #{cfg.app_version}", "", "  Sharing   #{cfg.root}"],
+    ["beap #{cfg.app_version}", "", "  Sharing   #{paths.display(cfg.root)}"],
     urls,
     ["  Uploads   #{uploads}"],
     warning,

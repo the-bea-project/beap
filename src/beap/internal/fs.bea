@@ -1,5 +1,6 @@
 //// Directory listings and human-readable sizes.
 
+import beap/internal/paths
 import beap/internal/runtime/runtime
 import simplifile.{type FileError}
 
@@ -29,7 +30,7 @@ pub def entries(dir: String) -> Result(List(Entry), FileError) {
 }
 
 def entry(dir: String, name: String) -> Result(Entry, Nil) {
-  path = dir <> "/" <> name
+  path = paths.join(dir, [name])
   info = simplifile.file_info(path)? else _ -> Error(Nil)
   link = simplifile.is_symlink(path) == Ok(True)
   case simplifile.file_info_type(info) {

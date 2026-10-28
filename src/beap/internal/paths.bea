@@ -6,6 +6,11 @@
 //// is followed, and the result must be the root or lie inside it. A link to
 //// somewhere else in the root works; a link leading out of it is refused,
 //// whatever its target is called.
+////
+//// Paths on the disk use `/` on every system. On Windows they start with a
+//// drive (`C:/`), `\` separates components too, and names follow Windows'
+//// rules: no `\ : * ? " < > |`, no trailing dot or space, no device names
+//// such as `CON`.
 
 import beap/internal/runtime/runtime
 import simplifile
@@ -42,11 +47,44 @@ def decode_segment(raw: String) -> Result(String, PathError) {
 
 /// A name that can only mean one entry of one directory.
 pub def valid_segment(segment: String) -> Bool {
-  case segment {
-    "" | "." | ".." -> False
-    _ -> not list.any(["/", "\u{0}"], string.contains(segment, _))
+  cond {
+    list.contains(["", ".", ".."], segment) -> False
+    contains_any(segment, ["/", "\u{0}"]) -> False
+    runtime.windows() -> windows_name(segment)
+    _ -> True
   }
 }
+
+/// A name Windows takes as it is.
+pub def windows_name(name: String) -> Bool {
+  base = case string.split_once(name, ".") {
+    Ok((base, _)) -> base
+    Error(_) -> name
+  }
+  devices = string.split(windows_devices, " ")
+  cond {
+    contains_any(name, string.to_graphemes(windows_reserved)) -> False
+    list.any(string.to_graphemes(name), control) -> False
+    string.ends_with(name, ".") or string.ends_with(name, " ") -> False
+    list.contains(devices, string.uppercase(base)) -> False
+    _ -> True
+  }
+}
+
+def contains_any(text: String, parts: List(String)) -> Bool {
+  list.any(parts, string.contains(text, _))
+}
+
+def control(char: String) -> Bool {
+  case <<char:utf8>> {
+    <<byte, _:bytes>> -> byte < 0x20
+    _ -> False
+  }
+}
+
+const windows_reserved: String = "\\:*?\"<>|"
+
+const windows_devices: String = "CON PRN AUX NUL COM1 COM2 COM3 COM4 COM5 COM6 COM7 COM8 COM9 LPT1 LPT2 LPT3 LPT4 LPT5 LPT6 LPT7 LPT8 LPT9"
 
 /// The real path of `segments` under `root` (itself a real path). It must
 /// exist, and lie in the root but not in the staging directory.
@@ -61,57 +99,121 @@ pub def resolve(
 }
 
 pub def join(root: String, segments: List(String)) -> String {
-  string.join([root | segments], "/")
+  case segments {
+    [] -> root
+    _ -> without_slash(root) <> "/" <> string.join(segments, "/")
+  }
 }
 
 /// Is `path` the directory `dir` or inside it? Both are real paths, so
-/// comparing whole components is enough.
+/// comparing whole components is enough (ignoring case on Windows, as
+/// its filesystems do).
 pub def inside(dir: String, path: String) -> Bool {
-  dir == "/" or path == dir or string.starts_with(path, dir <> "/")
+  (dir, path) = case runtime.windows() {
+    True -> (string.lowercase(dir), string.lowercase(path))
+    False -> (dir, path)
+  }
+  path == dir or string.starts_with(path, without_slash(dir) <> "/")
+}
+
+def without_slash(path: String) -> String {
+  case string.ends_with(path, "/") {
+    True -> string.drop_end(path, 1)
+    False -> path
+  }
+}
+
+/// The path as the system writes it: with `\` on Windows.
+pub def display(path: String) -> String {
+  case runtime.windows() {
+    True -> string.replace(path, "/", "\\")
+    False -> path
+  }
 }
 
 /// The absolute path to an existing file with every `.`, `..` and symbolic
 /// link resolved, like `realpath(3)`.
 pub def real_path(path: String) -> Result(String, PathError) {
-  walk([], string.split(path, "/"), 0)
+  windows = runtime.windows()
+  (root, rest) = split_root(path, windows)? else _ -> Error(NotFound)
+  walk(root, [], components(rest, windows), windows, 0)
 }
 
-/// `resolved` holds the components resolved so far, last first; `rest` the
-/// ones still to go.
+/// An absolute path's root and the rest: `/` on Unix; on Windows the drive
+/// (`C:\x` gives `C:/` and `x`), or `/` for the current one.
+pub def split_root(
+  path: String,
+  windows: Bool,
+) -> Result((String, String), Nil) {
+  case windows, path {
+    _, "/" <> rest | True, "\\" <> rest -> Ok(("/", rest))
+    True, _ -> {
+      Ok((letter, ":" <> rest)) = string.pop_grapheme(path) else Error(Nil)
+      string.contains(drive_letters, string.uppercase(letter)) else Error(Nil)
+      drive = string.uppercase(letter) <> ":/"
+      case rest {
+        "" -> Ok((drive, ""))
+        "/" <> rest | "\\" <> rest -> Ok((drive, rest))
+        // `C:x` is relative to the drive's current directory.
+        _ -> Error(Nil)
+      }
+    }
+    False, _ -> Error(Nil)
+  }
+}
+
+const drive_letters: String = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+/// The components of a path, separated by `/` (and `\` on Windows).
+pub def components(path: String, windows: Bool) -> List(String) {
+  case windows {
+    True -> string.replace(path, "\\", "/")
+    False -> path
+  }
+  |> string.split("/")
+}
+
+/// `resolved` holds the components resolved so far under `root`, last
+/// first; `rest` the ones still to go.
 def walk(
+  root: String,
   resolved: List(String),
   rest: List(String),
+  windows: Bool,
   links: Int,
 ) -> Result(String, PathError)
 
-def walk(resolved, [], _) {
-  Ok("/" <> string.join(list.reverse(resolved), "/"))
+def walk(root, resolved, [], _, _) {
+  Ok(root <> string.join(list.reverse(resolved), "/"))
 }
 
-def walk(resolved, ["" | rest], links) {
-  walk(resolved, rest, links)
+def walk(root, resolved, ["" | rest], windows, links) {
+  walk(root, resolved, rest, windows, links)
 }
 
-def walk(resolved, ["." | rest], links) {
-  walk(resolved, rest, links)
+def walk(root, resolved, ["." | rest], windows, links) {
+  walk(root, resolved, rest, windows, links)
 }
 
-def walk(resolved, [".." | rest], links) {
-  walk(list.drop(resolved, 1), rest, links)
+def walk(root, resolved, [".." | rest], windows, links) {
+  walk(root, list.drop(resolved, 1), rest, windows, links)
 }
 
-def walk(resolved, [name | rest], links) {
-  path = "/" <> string.join(list.reverse([name | resolved]), "/")
+def walk(root, resolved, [name | rest], windows, links) {
+  path = root <> string.join(list.reverse([name | resolved]), "/")
   case runtime.read_link(path) {
-    Error(simplifile.Einval) -> walk([name | resolved], rest, links)
+    Error(simplifile.Einval) ->
+      walk(root, [name | resolved], rest, windows, links)
     Ok(target) -> {
       // The same limit as Linux, against link loops.
       links < 40 else Error(Unreadable(simplifile.Eloop))
-      base = case target {
-        "/" <> _ -> []
-        _ -> resolved
+      // An absolute target starts over from its root.
+      (root, resolved, target) = case split_root(target, windows) {
+        Ok((root, target)) -> (root, [], target)
+        Error(_) -> (root, resolved, target)
       }
-      walk(base, list.append(string.split(target, "/"), rest), links + 1)
+      rest = list.append(components(target, windows), rest)
+      walk(root, resolved, rest, windows, links + 1)
     }
     Error(simplifile.Enoent) | Error(simplifile.Enotdir) -> Error(NotFound)
     Error(simplifile.Eacces) -> Error(Forbidden)

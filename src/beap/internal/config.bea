@@ -60,12 +60,25 @@ pub def load() -> Result(Command, String) {
 }
 
 def shared_directory(dir: String) -> Result(String, String) {
-  absolute = simplifile.resolve(dir)?
-    else _ -> Error("#{dir}: no such directory")
-  root = paths.real_path(absolute)? else _ -> Error("#{dir}: no such directory")
+  cwd = simplifile.current_directory()?
+    else _ -> Error("cannot read the current directory")
+  absolute = case paths.split_root(dir, runtime.windows()) {
+    Ok(_) -> dir
+    Error(_) -> cwd <> "/" <> dir
+  }
+  root = paths.real_path(absolute)?
+    else error -> Error(directory_error(dir, error))
   simplifile.is_directory(root) == Ok(True)
     else Error("#{dir} is not a directory")
   Ok(root)
+}
+
+def directory_error(dir: String, error: paths.PathError) -> String {
+  case error {
+    paths.NotFound | paths.BadPath -> "#{dir}: no such directory"
+    paths.Forbidden -> "#{dir}: permission denied"
+    paths.Unreadable(error) -> "#{dir}: #{simplifile.describe_error(error)}"
+  }
 }
 
 /// The arguments over `defaults`. Options may come in any order; the

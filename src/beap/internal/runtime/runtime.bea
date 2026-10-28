@@ -6,6 +6,10 @@ import simplifile.{type FileError}
 @external(erlang, "beap_ffi", "app_version")
 pub def app_version(app_name: Atom) -> String
 
+/// Whether this is Windows, where paths start with a drive and also use `\`.
+@external(erlang, "beap_ffi", "windows")
+pub def windows() -> Bool
+
 /// Stop the VM with an exit status.
 @external(erlang, "beap_ffi", "halt")
 pub def halt(status: Int) -> Nil

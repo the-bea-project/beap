@@ -1,6 +1,6 @@
 -module(beap_ffi).
 -export([
-    app_version/1, halt/1, local_addresses/0, check_listen/2,
+    app_version/1, halt/1, windows/0, local_addresses/0, check_listen/2,
     read_directory/1, read_link/1, argument_bytes/1,
     open_exclusive/1, write/2, sync/1, close/1,
     watch/1, unwatch/1,
@@ -14,6 +14,9 @@ app_version(App) ->
         {ok, Version} -> list_to_binary(Version);
         undefined -> <<"0.0.0">>
     end.
+
+windows() ->
+    element(1, os:type()) =:= win32.
 
 halt(Code) ->
     erlang:halt(Code, [{flush, true}]).

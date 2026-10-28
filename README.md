@@ -48,6 +48,10 @@ beap --max-upload 2G          # largest upload accepted (default 10G)
 bea run -- --dir ~/Downloads  # the same, from the source
 ```
 
+On Windows, paths work as usual: `beap.exe --dir C:\Users\me\Desktop` or
+`--dir .\shared`. Names Windows can't store (with `\ : * ? " < > |`, ending
+with a dot or space, or `CON`, `NUL`, `COM1`...) are refused for uploads.
+
 | Option | Default | |
 | --- | --- | --- |
 | `--host HOST` | `127.0.0.1` | interface to listen on: `0.0.0.0` for all IPv4 ones, `::` for IPv6 |
@@ -146,6 +150,8 @@ server are cleared when it starts again.
 - The checks against symbolic links happen when a request arrives: someone
   who can change the shared directory's files on this machine could swap a
   folder for a link meanwhile. Network clients can't create links.
+- On Windows, network shares (`\\server\share`) can't be shared; map them
+  to a drive letter first.
 - Free disk space isn't checked in advance: an upload that fills the disk
   fails with `507` and is removed.
 

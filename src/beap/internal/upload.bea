@@ -44,7 +44,9 @@ pub def prepare(root: String) -> Result(String, simplifile.FileError) {
   staging = paths.join(root, [paths.staging_name])
   simplifile.create_directory_all(staging)?
   names = runtime.read_directory(staging)?
-  list.each(names, fn(name) { simplifile.delete_file(staging <> "/" <> name) })
+  list.each(names, fn(name) {
+    simplifile.delete_file(paths.join(staging, [name]))
+  })
   Ok(staging)
 }
 
@@ -105,7 +107,7 @@ def publish(
 ) -> Result(Saved, UploadError) {
   attempt < 100 else Error(Conflict)
   candidate = numbered(name, attempt)
-  case simplifile.create_link(to: temp, from: dir <> "/" <> candidate) {
+  case simplifile.create_link(to: temp, from: paths.join(dir, [candidate])) {
     Ok(_) -> Ok(Saved(name: candidate, size:))
     Error(simplifile.Eexist) -> publish(temp, dir, name, size, attempt + 1)
     Error(error) -> case list.contains(no_hard_links, error) {
@@ -134,7 +136,7 @@ def move(
 ) -> Result(Saved, UploadError) {
   attempt < 100 else Error(Conflict)
   candidate = numbered(name, attempt)
-  target = dir <> "/" <> candidate
+  target = paths.join(dir, [candidate])
   case simplifile.link_info(target) {
     Ok(_) -> move(temp, dir, name, size, attempt + 1)
     Error(simplifile.Enoent) -> {
